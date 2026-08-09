@@ -18,11 +18,13 @@ REM Recreate and build
 mkdir build
 cd build
 
-cmake -DWITH_MODULES=ON -DWITH_SERIAL_BACKEND=ON -DWITH_ZSTD=OFF -DWITH_USB_BACKEND=OFF -DWITH_NETWORK_BACKEND=OFF -DWITH_LOCAL_BACKEND=OFF ^
+cmake -DWITH_MODULES=ON -DWITH_SERIAL_BACKEND=ON -DWITH_ZSTD=ON -DWITH_USB_BACKEND=OFF -DWITH_NETWORK_BACKEND=OFF -DWITH_LOCAL_BACKEND=OFF -DCSHARP_BINDINGS=ON -DPYTHON_BINDINGS=ON ^
 -DLIBSERIALPORT_LIBRARIES="C:\deps\libserialport\x64\Release\libserialport.lib" ^
 -DLIBSERIALPORT_INCLUDE_DIR="C:\deps\libserialport" ^
 -DLIBXML2_LIBRARIES="C:\deps\libiio-win-deps\libs\64\libxml2.lib" ^
 -DLIBXML2_INCLUDE_DIR="C:\deps\libiio-win-deps\include\libxml2" ^
+-DLIBZSTD_LIBRARIES="C:\deps\zstd\libzstd_static.lib" ^
+-DLIBZSTD_INCLUDE_DIR="C:\deps\zstd" ^
 -DLOG_LEVEL=Debug ..
 
 cmake --build . --config Release

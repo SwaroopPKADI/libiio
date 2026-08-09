@@ -9,21 +9,25 @@ set day=%datetime:~6,2%
 set hour=%datetime:~8,2%
 set min=%datetime:~10,2%
 
+REM Set the LibIIO root folder
+set libiio_root=%~dp0..
+
 REM Format folder name as build_<day>_<hour>_<min>
 set folder=build_%day%_%hour%_%min%
 
 REM Set destination path
-set dest=C:\Projects\libiio_10\libiio\my_build\%folder%
+set dest="%libiio_root%\my_build\%folder%"
 
 REM Create destination folder
 mkdir "%dest%"
 
 REM Copy DLLs
-copy "C:\Projects\libiio_10\libiio\build\Release\libiio1.dll" "%dest%"
-copy "C:\Projects\libiio_10\libiio\build\Release\libiio-serial.dll" "%dest%"
+copy "%libiio_root%\build\Release\libiio1.dll" %dest%
+copy "%libiio_root%\build\Release\libiio-serial.dll" %dest%
+copy "%libiio_root%\build\Release\libiio1.dll" "%dest%\libiio.so.1.dll"
 
 REM Copy all EXEs
-copy "C:\Projects\libiio_10\libiio\build\utils\Release\*.exe" "%dest%"
+copy "%libiio_root%\build\utils\Release\*.exe" "%dest%"
 
 echo Files copied to %dest%
 pause
