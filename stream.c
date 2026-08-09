@@ -109,6 +109,23 @@ void iio_stream_destroy(struct iio_stream *stream)
 	free(stream);
 }
 
+#ifdef _WIN32
+#include <windows.h>
+void delay_us(unsigned int microseconds)
+{
+	LARGE_INTEGER frequency, start, current;
+	double elapsed;
+
+	QueryPerformanceFrequency(&frequency);
+	QueryPerformanceCounter(&start);
+	do {
+		QueryPerformanceCounter(&current);
+		elapsed = (double)(current.QuadPart - start.QuadPart) * 1000000.0 /
+				frequency.QuadPart;
+	} while (elapsed < microseconds);
+}
+#endif
+
 const struct iio_block *iio_stream_get_next_block(struct iio_stream *stream)
 {
 	const struct iio_device *dev = stream->buf_stream->buf->dev;
@@ -123,6 +140,7 @@ const struct iio_block *iio_stream_get_next_block(struct iio_stream *stream)
 				dev_perror(dev, err, "Unable to enqueue block");
 				return iio_ptr(err);
 			}
+			printf("================\n One block enqueued");
 		}
 
 		stream->started = true;
@@ -139,6 +157,8 @@ const struct iio_block *iio_stream_get_next_block(struct iio_stream *stream)
 		return iio_ptr(err);
 	}
 
+	printf("================\n One block enqueued");
+
 	if (!stream->buf_enabled) {
 		err = iio_buffer_stream_start(stream->buf_stream);
 		if (err) {
@@ -153,12 +173,16 @@ const struct iio_block *iio_stream_get_next_block(struct iio_stream *stream)
 
 	stream->all_enqueued |= stream->curr == 0;
 	if (stream->all_enqueued) {
-		err = iio_block_dequeue(stream->blocks[stream->curr], false);
+		do {
+			err = iio_block_dequeue(stream->blocks[stream->curr], true);
+		} while (err == -EBUSY);
 		if (err < 0) {
 			dev_perror(dev, err, "Unable to dequeue block");
 			return iio_ptr(err);
 		}
 	}
+
+	printf("********************\n One block dequeued");
 
 	return stream->blocks[stream->curr];
 }

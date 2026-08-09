@@ -250,32 +250,34 @@ static int iiod_responder_reader_worker(struct iiod_responder *priv)
 	while (!priv->thrd_stop) {
 		iio_mutex_unlock(priv->lock);
 
+		printf("SAI: Waiting to read command...\n");
 		ret = iiod_rw_all(priv, NULL, &cmd_buf, 1, sizeof(cmd), true);
+		printf("SAI: Read command: op=%u, dev=%u, code=%d, client_id=%u\n", cmd.op,
+				cmd.dev, cmd.code, cmd.client_id);
 
 		if (!strncmp((char *)&cmd, "BINARY\r\n", 8)) {
-			/* If we receive again the "BINARY\r\n" string, send a
-			 * return code of zero and continue as usual.
-			 * This can happen with the serial backend when the
-			 * client disconnects and a new client appears.
-			 * Conveniently, the string is exactly 8 bytes, which is
-			 * the size of a iio_command. */
-
+			printf("SAI: Received 'BINARY\\r\\n', sending OK response...\n");
 			iiod_rw_all(priv, NULL, &ok_buf, 1, ok_buf.size, false);
 			continue;
 		}
 
 		iio_mutex_lock(priv->lock);
-		if (ret <= 0)
+		if (ret <= 0) {
+			printf("SAI: Error or stop condition encountered, exiting loop. ret=%zd\n", ret);
 			break;
+		}
 
 		if (cmd.op != IIOD_OP_RESPONSE) {
 			iio_mutex_unlock(priv->lock);
 
+			printf("SAI: Running command...\n");
 			ret = iiod_run_command(priv, &cmd);
 
 			iio_mutex_lock(priv->lock);
-			if (ret < 0)
+			if (ret < 0) {
+				printf("SAI: Command execution failed. ret=%zd\n", ret);
 				break;
+			}
 
 			continue;
 		}
@@ -287,14 +289,15 @@ static int iiod_responder_reader_worker(struct iiod_responder *priv)
 		}
 
 		if (!io) {
-			/* We received a response, but have no client waiting
-			 * for it, so drop it. */
+			printf("SAI: No client found for response, discarding data. client_id=%u, code=%d\n",
+					cmd.client_id, cmd.code);
 			iio_mutex_unlock(priv->lock);
 			iiod_discard_data(priv, cmd.code);
 			iio_mutex_lock(priv->lock);
 			continue;
 		}
 
+		printf("SAI: Found client for response. client_id=%u\n", cmd.client_id);
 		iiod_io_ref_unlocked(io);
 
 		/* Discard the entry from the readers list */
@@ -303,15 +306,20 @@ static int iiod_responder_reader_worker(struct iiod_responder *priv)
 		iio_mutex_unlock(priv->lock);
 
 		if (io->r_io.nb_buf && cmd.code > 0) {
+			printf("SAI: Reading response data. code=%d\n", cmd.code);
 			ret = iiod_rw_all(
 					priv, NULL, io->r_io.buf, io->r_io.nb_buf, cmd.code, true);
 
-			if (ret > 0 && (size_t)ret < (size_t)cmd.code)
+			if (ret > 0 && (size_t)ret < (size_t)cmd.code) {
+				printf("SAI: Partial read, discarding remaining data. read=%zd, expected=%d\n",
+						ret, cmd.code);
 				iiod_discard_data(priv, cmd.code - ret);
+			}
 
 			iio_mutex_lock(priv->lock);
 
 			if (ret <= 0) {
+				printf("SAI: Error reading response data. ret=%zd\n", ret);
 				iiod_responder_signal_io(io, (int32_t)ret);
 				iiod_io_unref_unlocked(io);
 				break;
@@ -321,6 +329,7 @@ static int iiod_responder_reader_worker(struct iiod_responder *priv)
 		}
 
 		/* Wake up the reader */
+		printf("SAI: Signaling reader. code=%d\n", cmd.code);
 		iiod_responder_signal_io(io, cmd.code);
 		iiod_io_unref_unlocked(io);
 	}
@@ -328,17 +337,20 @@ static int iiod_responder_reader_worker(struct iiod_responder *priv)
 	priv->thrd_err_code = priv->thrd_stop ? -EINTR : (int)ret;
 	priv->thrd_stop = true;
 
+	printf("SAI: Canceling all pending responses...\n");
 	iiod_responder_cancel_responses(priv);
 	iio_task_stop(priv->write_task);
 	iio_task_flush(priv->write_task);
 
 	iio_mutex_unlock(priv->lock);
 
+	printf("SAI: Exiting reader worker. ret=%d\n", (int)ret);
 	return (int)ret;
 }
 
 static int iiod_responder_reader_thrd(void *d)
 {
+	printf("SAI: Starting reader thread...\n");
 	return iiod_responder_reader_worker(d);
 }
 
@@ -353,8 +365,12 @@ static int iiod_responder_write(void *p, void *elm)
 	cmd_buf.ptr = &writer->w_io.cmd;
 	cmd_buf.size = sizeof(cmd);
 
+	printf("SAI: Writing command: op=%u, dev=%u, code=%d, client_id=%u\n",
+			writer->w_io.cmd.op, writer->w_io.cmd.dev, writer->w_io.cmd.code,
+			writer->w_io.cmd.client_id);
 	ret = iiod_rw_all(priv, &cmd_buf, writer->w_io.buf, writer->w_io.nb_buf, 0, false);
 	writer->w_io.cmd.code = (int32_t)ret;
+	printf("SAI: Write completed. ret=%zd\n", ret);
 
 	return 0;
 }
@@ -364,8 +380,12 @@ static int iiod_enqueue_command(struct iiod_io *writer, uint8_t op, uint8_t dev,
 {
 	struct iiod_responder *priv = writer->responder;
 
-	if (nb > NB_BUFS_MAX)
+	printf("SAI: Enqueuing command: op=%u, dev=%u, code=%d, nb=%zu\n", op, dev, code, nb);
+
+	if (nb > NB_BUFS_MAX) {
+		printf("SAI: Error: Too many buffers. nb=%zu, max=%d\n", nb, NB_BUFS_MAX);
 		return -EINVAL;
+	}
 
 	writer->w_io.start_time = read_counter_us();
 	writer->w_io.cmd.op = op;
@@ -378,11 +398,13 @@ static int iiod_enqueue_command(struct iiod_io *writer, uint8_t op, uint8_t dev,
 
 	iio_mutex_lock(priv->lock);
 	if (writer->write_token) {
+		printf("SAI: Error: Write token already exists.\n");
 		iio_mutex_unlock(priv->lock);
 		return -EIO;
 	}
 
 	if (priv->thrd_stop) {
+		printf("SAI: Error: Thread is stopping, cannot enqueue command.\n");
 		iio_mutex_unlock(priv->lock);
 		return priv->thrd_err_code;
 	}
@@ -390,6 +412,7 @@ static int iiod_enqueue_command(struct iiod_io *writer, uint8_t op, uint8_t dev,
 	writer->write_token = iio_task_enqueue(priv->write_task, writer);
 	iio_mutex_unlock(priv->lock);
 
+	printf("SAI: Command enqueued successfully.\n");
 	return iio_err(writer->write_token);
 }
 
@@ -399,6 +422,7 @@ bool iiod_io_command_is_done(struct iiod_io *io)
 	uint64_t timeout_us;
 	bool done;
 
+	printf("SAI: Checking if command is done for IO: %p\n", io);
 	iio_mutex_lock(priv->lock);
 
 	done = io->write_token && iio_task_is_done(io->write_token);
@@ -411,6 +435,7 @@ bool iiod_io_command_is_done(struct iiod_io *io)
 
 	iio_mutex_unlock(priv->lock);
 
+	printf("SAI: Command done status: %d\n", done);
 	return done;
 }
 
@@ -421,42 +446,66 @@ int iiod_io_wait_for_command_done(struct iiod_io *io)
 	struct iiod_responder *priv = io->responder;
 	struct iio_task_token *token;
 
+	printf("SAI: Waiting for command to complete for IO: %p\n", io);
 	iio_mutex_lock(priv->lock);
 	token = io->write_token;
 	io->write_token = NULL;
 	iio_mutex_unlock(priv->lock);
 
-	if (!token)
+	if (!token) {
+		printf("SAI: No token found, command already completed.\n");
 		return 0;
+	}
 
 	if (timeout_ms > 0) {
 		diff_ms = (read_counter_us() - io->w_io.start_time) / 1000;
 
-		if (diff_ms >= (uint64_t)timeout_ms)
+		if (diff_ms >= (uint64_t)timeout_ms) {
+			printf("SAI: Command timed out, canceling token.\n");
 			iio_task_cancel(token);
+		}
 	}
 
-	if (timeout_ms <= 0)
-		return iio_task_sync(token, timeout_ms);
+	if (timeout_ms <= 0) {
+		int ret = iio_task_sync(token, timeout_ms);
+		printf("SAI: Command wait completed with result: %d\n", ret);
+		return ret;
+	}
 
-	return iio_task_sync(token, (int)(timeout_ms - diff_ms));
+	{
+		int ret = iio_task_sync(token, (int)(timeout_ms - diff_ms));
+		printf("SAI: Command wait completed with result: %d\n", ret);
+		return ret;
+	}
 }
 
 bool iiod_io_has_response(struct iiod_io *io)
 {
-	if (io->r_done)
+	printf("SAI: Checking if IO has response for IO: %p\n", io);
+
+	if (io->r_done) {
+		printf("SAI: Response is ready.\n");
 		return true;
+	}
 
-	if (io->timeout_ms <= 0)
+	if (io->timeout_ms <= 0) {
+		printf("SAI: No timeout set, response not ready.\n");
 		return false;
+	}
 
-	return read_counter_us() - io->w_io.start_time > (uint64_t)io->timeout_ms * 1000;
+	{
+		bool has_response =
+				read_counter_us() - io->w_io.start_time > (uint64_t)io->timeout_ms * 1000;
+		printf("SAI: Response ready status: %d\n", has_response);
+		return has_response;
+	}
 }
 
 static int iiod_io_cond_wait(const struct iiod_io *io)
 {
 	uint64_t diff_ms;
 	int timeout_ms = io->timeout_ms;
+	printf("SAI: Waiting on condition for IO: %p\n", io);
 
 	if (timeout_ms < 0)
 		return iio_cond_wait(io->cond, io->lock, -1);
@@ -466,9 +515,12 @@ static int iiod_io_cond_wait(const struct iiod_io *io)
 
 	diff_ms = (read_counter_us() - io->r_io.start_time) / 1000;
 
-	if (diff_ms < (uint64_t)timeout_ms)
+	if (diff_ms < (uint64_t)timeout_ms) {
+		printf("SAI: Waiting with timeout: %d ms\n", (int)(timeout_ms - diff_ms));
 		return iio_cond_wait(io->cond, io->lock, (int)(timeout_ms - diff_ms));
+	}
 
+	printf("SAI: Condition wait timed out.\n");
 	return -ETIMEDOUT;
 }
 
@@ -477,11 +529,13 @@ int32_t iiod_io_wait_for_response(struct iiod_io *io)
 	struct iiod_responder *priv = io->responder;
 	int ret = 0;
 
+	printf("SAI: Waiting for response for IO: %p\n", io);
 	iio_mutex_lock(io->lock);
 
 	while (!io->r_done) {
 		ret = iiod_io_cond_wait(io);
 		if (ret) {
+			printf("SAI: Condition wait failed with error: %d\n", ret);
 			iio_mutex_lock(priv->lock);
 			__iiod_io_cancel_unlocked(io);
 			iio_mutex_unlock(priv->lock);
@@ -494,17 +548,21 @@ int32_t iiod_io_wait_for_response(struct iiod_io *io)
 
 	iio_mutex_unlock(io->lock);
 
+	printf("SAI: Response received with code: %d\n", io->r_io.cmd.code);
 	return io->r_io.cmd.code;
 }
 
 void iiod_io_cancel_response(struct iiod_io *io)
 {
+	printf("SAI: Canceling response for IO: %p\n", io);
 	iiod_responder_signal_io(io, -EINTR);
 }
 
 int iiod_io_send_command_async(struct iiod_io *io, const struct iiod_command *cmd,
 		const struct iiod_buf *buf, size_t nb)
 {
+	printf("SAI: Sending command asynchronously for IO: %p, op=%u, dev=%u, code=%d, nb=%zu\n",
+			io, cmd->op, cmd->dev, cmd->code, nb);
 	return iiod_enqueue_command(io, cmd->op, cmd->dev, cmd->code, buf, nb);
 }
 
@@ -513,16 +571,23 @@ int iiod_io_send_command(struct iiod_io *io, const struct iiod_command *cmd,
 {
 	int ret;
 
+	printf("SAI: Sending command for IO: %p\n", io);
 	ret = iiod_io_send_command_async(io, cmd, buf, nb);
-	if (ret)
+	if (ret) {
+		printf("SAI: Failed to send command asynchronously. Error: %d\n", ret);
 		return ret;
+	}
 
-	return iiod_io_wait_for_command_done(io);
+	ret = iiod_io_wait_for_command_done(io);
+	printf("SAI: Command send completed with result: %d\n", ret);
+	return ret;
 }
 
 int iiod_io_send_response_async(
 		struct iiod_io *io, int32_t code, const struct iiod_buf *buf, size_t nb)
 {
+	printf("SAI: Sending response asynchronously for IO: %p, code=%d, nb=%zu\n", io,
+			code, nb);
 	return iiod_enqueue_command(io, IIOD_OP_RESPONSE, 0, code, buf, nb);
 }
 
@@ -530,11 +595,16 @@ int iiod_io_send_response(struct iiod_io *io, int32_t code, const struct iiod_bu
 {
 	int ret;
 
+	printf("SAI: Sending response for IO: %p, code=%d\n", io, code);
 	ret = iiod_io_send_response_async(io, code, buf, nb);
-	if (ret)
+	if (ret) {
+		printf("SAI: Failed to send response asynchronously. Error: %d\n", ret);
 		return ret;
+	}
 
-	return iiod_io_wait_for_command_done(io);
+	ret = iiod_io_wait_for_command_done(io);
+	printf("SAI: Response send completed with result: %d\n", ret);
+	return ret;
 }
 
 int iiod_io_get_response_async(struct iiod_io *io, const struct iiod_buf *buf, size_t nb)
@@ -542,12 +612,16 @@ int iiod_io_get_response_async(struct iiod_io *io, const struct iiod_buf *buf, s
 	struct iiod_responder *priv = io->responder;
 	struct iiod_io *tmp;
 
-	if (nb > NB_BUFS_MAX)
+	printf("SAI: Getting response asynchronously for IO: %p, nb=%zu\n", io, nb);
+
+	if (nb > NB_BUFS_MAX) {
+		printf("SAI: Error: Too many buffers. nb=%zu, max=%d\n", nb, NB_BUFS_MAX);
 		return -EINVAL;
+	}
 
 	iio_mutex_lock(priv->lock);
 	if (priv->thrd_stop) {
-		/* Thread has been stopped, cannot enqueue response */
+		printf("SAI: Error: Thread is stopping, cannot enqueue response.\n");
 		iio_mutex_unlock(priv->lock);
 		return priv->thrd_err_code;
 	}
@@ -570,6 +644,7 @@ int iiod_io_get_response_async(struct iiod_io *io, const struct iiod_buf *buf, s
 
 	iio_mutex_unlock(priv->lock);
 
+	printf("SAI: Response enqueued successfully for IO: %p\n", io);
 	return 0;
 }
 
@@ -578,17 +653,29 @@ int iiod_io_exec_command(struct iiod_io *io, const struct iiod_command *cmd,
 {
 	int ret;
 
+	printf("SAI: Executing command for IO: %p\n", io);
+	printf("SAI: Command details: op=%u, dev=%u, code=%d, client_id=%u\n", cmd->op,
+			cmd->dev, cmd->code, cmd->client_id);
+	printf("SAI: cmd_buf: ptr=%p, size=%zu\n", cmd_buf ? cmd_buf->ptr : NULL,
+			cmd_buf ? cmd_buf->size : 0);
+	printf("SAI: buf: ptr=%p, size=%zu\n", buf ? buf->ptr : NULL,
+			buf ? buf->size : 0);
 	ret = iiod_io_get_response_async(io, buf, buf != NULL);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Failed to get response asynchronously. Error: %d\n", ret);
 		return ret;
+	}
 
 	ret = iiod_io_send_command(io, cmd, cmd_buf, cmd_buf != NULL);
 	if (ret < 0) {
+		printf("SAI: Failed to send command. Error: %d\n", ret);
 		iiod_io_cancel(io);
 		return ret;
 	}
 
-	return (int)iiod_io_wait_for_response(io);
+	ret = (int)iiod_io_wait_for_response(io);
+	printf("SAI: Command execution completed with result: %d\n", ret);
+	return ret;
 }
 
 struct iiod_io *iiod_responder_create_io(struct iiod_responder *priv, uint16_t id)

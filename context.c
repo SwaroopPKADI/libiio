@@ -697,36 +697,37 @@ static int iio_context_update_scale_offset(struct iio_context *ctx)
 	if (!ctx->ops->read_attr)
 		return 0;
 
-	for (i = 0; i < ctx->nb_devices; i++) {
-		dev = ctx->devices[i];
+		//Changed: SAIDO
+	// for (i = 0; i < ctx->nb_devices; i++) {
+	// 	dev = ctx->devices[i];
 
-		for (j = 0; j < dev->nb_channels; j++) {
-			chn = dev->channels[j];
+	// 	for (j = 0; j < dev->nb_channels; j++) {
+	// 		chn = dev->channels[j];
 
-			if (chn->is_scan_element && ctx->ops->refresh_format)
-				iio_channel_refresh_format(chn);
+	// 		if (chn->is_scan_element && ctx->ops->refresh_format)
+	// 			iio_channel_refresh_format(chn);
 
-			attr = iio_channel_find_attr(chn, "scale");
-			if (attr) {
-				err = iio_attr_read_double(attr, &chn->format.scale);
-				if (err) {
-					chn_perror(chn, err, "Unable to read scale");
-					return err;
-				}
+	// 		attr = iio_channel_find_attr(chn, "scale");
+	// 		if (attr) {
+	// 			err = iio_attr_read_double(attr, &chn->format.scale);
+	// 			if (err) {
+	// 				chn_perror(chn, err, "Unable to read scale");
+	// 				return err;
+	// 			}
 
-				chn->format.with_scale = true;
-			}
+	// 			chn->format.with_scale = true;
+	// 		}
 
-			attr = iio_channel_find_attr(chn, "offset");
-			if (attr) {
-				err = iio_attr_read_double(attr, &chn->format.offset);
-				if (err) {
-					chn_perror(chn, err, "Unable to read offset");
-					return err;
-				}
-			}
-		}
-	}
+	// 		attr = iio_channel_find_attr(chn, "offset");
+	// 		if (attr) {
+	// 			err = iio_attr_read_double(attr, &chn->format.offset);
+	// 			if (err) {
+	// 				chn_perror(chn, err, "Unable to read offset");
+	// 				return err;
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	return 0;
 }

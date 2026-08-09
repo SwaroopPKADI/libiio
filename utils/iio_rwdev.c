@@ -30,12 +30,14 @@
 #define SAMPLES_PER_READ 256
 #define DEFAULT_FREQ_HZ 100
 #define REFILL_PER_BENCHMARK 10
+#define NUM_OF_BLOCKS 4
 
 static const struct option options[] = {
 	{ "trigger", required_argument, 0, 't' },
 	{ "trigger-rate", required_argument, 0, 'r' },
 	{ "buffer-size", required_argument, 0, 'b' },
 	{ "buffer-index", required_argument, 0, 'i' },
+	{ "num-of-blocks", required_argument, 0, 'n' },
 	{ "samples", required_argument, 0, 's' },
 	{ "auto", no_argument, 0, 'a' },
 	{ "write", no_argument, 0, 'w' },
@@ -51,6 +53,7 @@ static const char *options_descriptions[] = {
 	"Set the trigger to the specified rate (Hz). Default is 100 Hz.",
 	"Size of the transfer buffer. Default is 256.",
 	"Buffer index to use. Default is 0.",
+	"Number of blocks to use in the stream. Default is 4.",
 	"Number of samples to transfer, 0 = infinite. Default is 0.",
 	"Scan for available contexts and if only one is available use it.",
 	"Transmit to IIO device (TX) instead of receiving (RX).",
@@ -274,7 +277,7 @@ static ssize_t transfer_sample(const struct iio_channel *chn, void *buf, size_t 
 	return (ssize_t)nb;
 }
 
-#define MY_OPTS "t:b:i:s:T:r:wcB"
+#define MY_OPTS "t:b:i:s:T:r:n:wcB"
 
 int main(int argc, char **argv)
 {
@@ -283,6 +286,7 @@ int main(int argc, char **argv)
 	unsigned int buffer_size = SAMPLES_PER_READ;
 	unsigned int buffer_index = 0;
 	unsigned int trigger_rate = DEFAULT_FREQ_HZ;
+	unsigned int num_blocks = NUM_OF_BLOCKS;
 	uint64_t refill_per_benchmark = REFILL_PER_BENCHMARK;
 	struct iio_device *dev, *trigger;
 	const struct iio_channel *ch;
@@ -344,6 +348,13 @@ int main(int argc, char **argv)
 				goto err_free_ctx;
 			}
 			buffer_size = sanitize_clamp("buffer size", optarg, 1, SIZE_MAX);
+			break;
+		case 'n':
+			if (!optarg) {
+				fprintf(stderr, "Number of blocks requires an argument\n");
+				goto err_free_ctx;
+			}
+			num_blocks = sanitize_clamp("number of blocks", optarg, 1, SIZE_MAX);
 			break;
 		case 'i':
 			if (!optarg) {
@@ -466,6 +477,7 @@ int main(int argc, char **argv)
 	}
 
 	nb_channels = iio_device_get_channels_count(dev);
+	printf("\n===============Number of channels: %u\n", nb_channels);
 	mask = iio_create_channels_mask(nb_channels);
 	if (!mask) {
 		fprintf(stderr, "Unable to create channels mask\n");
@@ -529,6 +541,7 @@ int main(int argc, char **argv)
 	}
 
 	sample_size = iio_device_get_sample_size(dev, mask);
+	printf("===============Sample size: %zd bytes\n", sample_size);
 	/* Zero isn't normally an error code, but in this case it is an error */
 	if (sample_size == 0) {
 		fprintf(stderr, "Unable to get sample size, returned 0\n");
@@ -545,7 +558,7 @@ int main(int argc, char **argv)
 		goto err_free_mask;
 	}
 
-	stream = iio_buffer_create_stream(buffer, 4, buffer_size, mask);
+	stream = iio_buffer_create_stream(buffer, num_blocks, buffer_size, mask);
 	ret = iio_err(stream);
 	if (ret) {
 		dev_perror(dev, ret, "Unable to create stream");
@@ -553,6 +566,7 @@ int main(int argc, char **argv)
 	}
 
 	hw_sample_size = iio_device_get_sample_size(dev, mask);
+	printf("==============hw_sample size: %zd\n", hw_sample_size);
 
 #ifdef _WIN32
 	/*
@@ -561,6 +575,17 @@ int main(int argc, char **argv)
 	 */
 	_setmode(_fileno(is_write ? stdin : stdout), _O_BINARY);
 #endif
+
+	FILE *fp = fopen("adc_new_output.bin", "ab");
+	if (!fp) {
+		perror("fopen");
+		goto err_destroy_stream;
+	}
+
+	static char iobuf[1 << 20];
+	if (setvbuf(fp, iobuf, _IOFBF, sizeof(iobuf)) != 0) {
+		perror("setvbuf failed");
+	}
 
 	for (i = 0, total = 0; app_running;) {
 		if (benchmark)
@@ -572,6 +597,32 @@ int main(int argc, char **argv)
 			if (app_running)
 				dev_perror(dev, ret, "Unable to get next block");
 			break;
+		}
+
+		start = iio_block_start(block);
+		len = (intptr_t)iio_block_end(block) - (intptr_t)start;
+
+		if (num_samples && len > num_samples * sample_size)
+			len = num_samples * sample_size;
+
+		{
+			uint8_t *ptr = (uint8_t *)start;
+			rw_len = len;
+
+			while (len > 0) {
+				nb = fwrite(ptr, 1, len, fp);
+				if (!nb)
+					goto err_close_fp;
+
+				len -= nb;
+				ptr += nb;
+			}
+		}
+
+		if (num_samples) {
+			num_samples -= rw_len / sample_size;
+			if (!num_samples)
+				quit_all(EXIT_SUCCESS);
 		}
 
 		if (benchmark && is_write == do_write) {
@@ -604,19 +655,30 @@ int main(int argc, char **argv)
 		/* If there are only the samples we requested, we don't need to
 		 * demux */
 		if (hw_sample_size == sample_size) {
+	#if 1
 			start = iio_block_start(block);
 			len = (intptr_t)iio_block_end(block) - (intptr_t)start;
+			uint16_t *samples = (uint16_t *)start;
+			int sample_count = len / sample_size;
 
 			if (num_samples && len > num_samples * sample_size)
 				len = num_samples * sample_size;
 
+			(void)samples;
+
+			if (num_samples) {
+				num_samples -= sample_count;
+				if (!num_samples)
+					quit_all(EXIT_SUCCESS);
+			}
+	#else
 			for (rw_len = len; len;) {
 				if (is_write)
 					nb = fread(start, 1, len, stdin);
 				else
 					nb = fwrite(start, 1, len, stdout);
 				if (!nb)
-					goto err_destroy_stream;
+					goto err_close_fp;
 
 				len -= nb;
 				start = (void *)((intptr_t)start + nb);
@@ -627,14 +689,25 @@ int main(int argc, char **argv)
 				if (!num_samples)
 					quit_all(EXIT_SUCCESS);
 			}
+	#endif
 		} else {
+			printf("================\n sample size for each");
 			ret = (int)iio_block_foreach_sample(
 					block, mask, transfer_sample, &is_write);
 			if (ret < 0)
 				dev_perror(dev, ret, "Buffer processing failed");
 		}
+
+		printf("================\n one iter done");
 	}
 
+	printf("~~~~~~~~~~~~~~~~~~~~~~~~~~\n Out of the loop, cleaning up\n ~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+	fclose(fp);
+	fp = NULL;
+
+err_close_fp:
+	if (fp)
+		fclose(fp);
 err_destroy_stream:
 	iio_stream_destroy(stream);
 err_free_mask:

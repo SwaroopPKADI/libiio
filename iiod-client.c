@@ -202,10 +202,13 @@ static int iiod_client_exec_command(struct iiod_client *client, const char *cmd)
 	ssize_t ret;
 
 	ret = iiod_client_write_all(client, cmd, strlen(cmd));
-	if (ret < 0)
+	printf("SAI: write all: ret value: %zd\n", ret);
+	if (ret < 0) {
 		return (int)ret;
+	}
 
 	ret = iiod_client_read_integer(client, &resp);
+	printf("SAI: read integer: ret value: %zd\n", ret);
 	return ret < 0 ? (int)ret : resp;
 }
 
@@ -265,14 +268,20 @@ struct iiod_client *iiod_client_new(const struct iio_context_params *params,
 	struct iiod_client *client;
 	int err;
 
+	printf("SAI: Creating new iiod_client instance\n");
+
 	client = malloc(sizeof(*client));
-	if (!client)
+	if (!client) {
+		printf("SAI: Failed to allocate memory for iiod_client\n");
 		return iio_ptr(-ENOMEM);
+	}
 
 	client->lock = iio_mutex_create();
 	err = iio_err(client->lock);
-	if (err)
+	if (err) {
+		printf("SAI: Failed to create mutex, error: %d\n", err);
 		goto err_free_client;
+	}
 
 	client->params = params;
 	client->ops = ops;
@@ -280,36 +289,52 @@ struct iiod_client *iiod_client_new(const struct iio_context_params *params,
 	client->responder = NULL;
 	client->next_evstream_idx = (uint16_t)-1;
 
+	printf("SAI: Enabling binary interface\n");
 	err = iiod_client_enable_binary(client);
-	if (err)
+	if (err) {
+		printf("SAI: Failed to enable binary interface, error: %d\n", err);
 		goto err_free_lock;
+	}
 
+	printf("SAI: Setting timeout to %d ms\n", params->timeout_ms);
 	err = iiod_client_set_timeout(client, params->timeout_ms);
-	if (err)
+	if (err) {
+		printf("SAI: Failed to set timeout, error: %d\n", err);
 		goto err_free_responder;
+	}
+
+	printf("SAI: iiod_client instance created successfully\n");
 
 	return client;
 
 err_free_responder:
 	if (client->responder) {
+		printf("SAI: Destroying responder due to error\n");
 		iiod_client_cancel(client);
 		iiod_responder_destroy(client->responder);
 	}
 err_free_lock:
+	printf("SAI: Destroying mutex due to error\n");
 	iio_mutex_destroy(client->lock);
 err_free_client:
+	printf("SAI: Freeing client structure due to error\n");
 	free(client);
 	return iio_ptr(err);
 }
 
 void iiod_client_destroy(struct iiod_client *client)
 {
+	printf("SAI: Destroying iiod_client instance\n");
+
 	if (client->responder) {
+		printf("SAI: Canceling and destroying responder\n");
 		iiod_client_cancel(client);
 		iiod_responder_destroy(client->responder);
 	}
 
+	printf("SAI: Destroying mutex\n");
 	iio_mutex_destroy(client->lock);
+	printf("SAI: Freeing client structure\n");
 	free(client);
 }
 
@@ -464,36 +489,46 @@ static int calculate_remote_timeout(struct iiod_client *client, int timeout_ms)
 
 int iiod_client_set_timeout(struct iiod_client *client, int timeout)
 {
+	printf("SAI: Setting timeout. Input timeout: %d\n", timeout);
 	int remote_timeout = calculate_remote_timeout(client, timeout);
+	printf("SAI: Calculated remote timeout: %d\n", remote_timeout);
 	struct iiod_io *io;
 	int ret;
 
 	if (iiod_client_uses_binary_interface(client)) {
 		struct iiod_command cmd;
+		printf("SAI: Using binary interface to set timeout.\n");
 
 		iiod_responder_set_timeout(client->responder, timeout);
+		printf("SAI: Responder timeout set to: %d\n", timeout);
 
 		cmd.op = IIOD_OP_TIMEOUT;
 		cmd.code = remote_timeout;
 
 		io = iiod_responder_get_default_io(client->responder);
 		ret = iiod_io_exec_simple_command(io, &cmd);
+		printf("SAI: Timeout command executed. Return value: %d\n", ret);
 	} else {
 		char buf[1024];
+		printf("SAI: Using legacy interface to set timeout.\n");
 
 		iio_mutex_lock(client->lock);
+		printf("SAI: Mutex locked.\n");
 		iio_snprintf(buf, sizeof(buf), "TIMEOUT %d\r\n", remote_timeout);
+		printf("SAI: Timeout command buffer: %s\n", buf);
 		ret = iiod_client_exec_command(client, buf);
+		printf("SAI: Timeout command executed. Return value: %d\n", ret);
 		iio_mutex_unlock(client->lock);
+		printf("SAI: Mutex unlocked.\n");
 
 		if (ret == -EINVAL) {
-			/* The TIMEOUT command is not implemented in tinyiiod
-			 * based programs; so ignore if we get -EINVAL here. */
+			printf("SAI: TIMEOUT command not implemented. Ignoring -EINVAL.\n");
 			prm_dbg(client->params, "Unable to set remote timeout\n");
 			ret = 0;
 		}
 	}
 
+	printf("SAI: Timeout set operation completed. Return value: %d\n", ret);
 	return ret;
 }
 
@@ -522,6 +557,7 @@ static int iiod_client_discard(
 static ssize_t iiod_client_read_attr_new(
 		struct iiod_client *client, const struct iio_attr *attr, char *dest, size_t len)
 {
+	printf("SAI: Entering iiod_client_read_attr_new\n");
 	struct iiod_io *io = iiod_responder_get_default_io(client->responder);
 	const struct iio_channel *chn;
 	const struct iio_device *dev;
@@ -533,6 +569,7 @@ static ssize_t iiod_client_read_attr_new(
 
 	switch (attr->type) {
 	case IIO_ATTR_TYPE_CHANNEL:
+		printf("SAI: Attribute type is CHANNEL\n");
 		chn = attr->iio.chn;
 		dev = iio_channel_get_device(chn);
 
@@ -549,8 +586,10 @@ static ssize_t iiod_client_read_attr_new(
 			if (iio_channel_get_attr(chn, i) == attr)
 				break;
 
-		if (i == iio_channel_get_attrs_count(chn))
+		if (i == iio_channel_get_attrs_count(chn)) {
+			printf("SAI: Channel attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
@@ -575,6 +614,7 @@ static ssize_t iiod_client_read_attr_new(
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_DEVICE:
+		printf("SAI: Attribute type is DEVICE\n");
 		dev = attr->iio.dev;
 		cmd.op = IIOD_OP_READ_ATTR;
 
@@ -582,8 +622,10 @@ static ssize_t iiod_client_read_attr_new(
 			if (iio_device_get_attr(dev, i) == attr)
 				break;
 
-		if (i == iio_device_get_attrs_count(dev))
+		if (i == iio_device_get_attrs_count(dev)) {
+			printf("SAI: Device attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
@@ -601,6 +643,7 @@ static ssize_t iiod_client_read_attr_new(
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_DEBUG:
+		printf("SAI: Attribute type is DEBUG\n");
 		dev = attr->iio.dev;
 		cmd.op = IIOD_OP_READ_DBG_ATTR;
 
@@ -608,12 +651,15 @@ static ssize_t iiod_client_read_attr_new(
 			if (iio_device_get_debug_attr(dev, i) == attr)
 				break;
 
-		if (i == iio_device_get_debug_attrs_count(dev))
+		if (i == iio_device_get_debug_attrs_count(dev)) {
+			printf("SAI: Debug attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_BUFFER:
+		printf("SAI: Attribute type is BUFFER\n");
 		buf = attr->iio.buf;
 		dev = iio_buffer_get_device(buf);
 		cmd.op = IIOD_OP_READ_BUF_ATTR;
@@ -622,13 +668,16 @@ static ssize_t iiod_client_read_attr_new(
 			if (iio_buffer_get_attr(buf, i) == attr)
 				break;
 
-		if (i == iio_buffer_get_attrs_count(buf))
+		if (i == iio_buffer_get_attrs_count(buf)) {
+			printf("SAI: Buffer attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		arg2 = (uint16_t)buf->idx;
 		break;
 	default:
+		printf("SAI: Invalid attribute type\n");
 		return -EINVAL;
 	}
 
@@ -638,28 +687,35 @@ static ssize_t iiod_client_read_attr_new(
 	iiod_buf.ptr = dest;
 	iiod_buf.size = len;
 
+	printf("SAI: Executing command with dev: %u, code: %u\n", cmd.dev, cmd.code);
 	return iiod_io_exec_command(io, &cmd, NULL, &iiod_buf);
 }
 
 ssize_t iiod_client_attr_read(
 		struct iiod_client *client, const struct iio_attr *attr, char *dest, size_t len)
 {
+	printf("SAI: Entering iiod_client_attr_read\n");
 	const struct iio_device *dev;
 	const char *id;
 	char buf[1024];
 	ssize_t ret;
 
-	if (iiod_client_uses_binary_interface(client))
+	if (iiod_client_uses_binary_interface(client)) {
+		printf("SAI: Using binary interface\n");
 		return iiod_client_read_attr_new(client, attr, dest, len);
+	}
 
 	switch (attr->type) {
 	case IIO_ATTR_TYPE_CHANNEL:
+		printf("SAI: Attribute type is CHANNEL\n");
 		dev = iio_channel_get_device(attr->iio.chn);
 		break;
 	case IIO_ATTR_TYPE_BUFFER:
+		printf("SAI: Attribute type is BUFFER\n");
 		dev = iio_buffer_get_device(attr->iio.buf);
 		break;
 	default:
+		printf("SAI: Attribute type is DEVICE or other\n");
 		dev = attr->iio.dev;
 		break;
 	}
@@ -686,16 +742,21 @@ ssize_t iiod_client_attr_read(
 		iio_snprintf(buf, sizeof(buf), "READ %s BUFFER %s\r\n", id, attr->name);
 		break;
 	case IIO_ATTR_TYPE_CONTEXT:
+		printf("SAI: Invalid attribute type CONTEXT\n");
 		return -EINVAL;
 	}
 
 	iio_mutex_lock(client->lock);
+	printf("SAI: Mutex locked\n");
 
 	ret = (ssize_t)iiod_client_exec_command(client, buf);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Command execution failed with ret: %zd\n", ret);
 		goto out_unlock;
+	}
 
 	if ((size_t)ret + 1 > len) {
+		printf("SAI: Destination buffer too small, discarding data\n");
 		iiod_client_discard(client, dest, len, ret + 1);
 		ret = -EIO;
 		goto out_unlock;
@@ -710,16 +771,19 @@ ssize_t iiod_client_attr_read(
 
 		/* Replace it with a \0 just in case */
 		dest[ret] = '\0';
+		printf("SAI: Read successful, data: %s\n", dest);
 	}
 
 out_unlock:
 	iio_mutex_unlock(client->lock);
+	printf("SAI: Mutex unlocked\n");
 	return ret;
 }
 
 static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const struct iio_attr *attr,
 		const char *src, size_t len)
 {
+	printf("SAI: Entering iiod_client_write_attr_new\n");
 	struct iiod_io *io = iiod_responder_get_default_io(client->responder);
 	const struct iio_channel *chn;
 	const struct iio_device *dev;
@@ -733,6 +797,7 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 
 	switch (attr->type) {
 	case IIO_ATTR_TYPE_CHANNEL:
+		printf("SAI: Attribute type is CHANNEL\n");
 		chn = attr->iio.chn;
 		dev = iio_channel_get_device(chn);
 
@@ -749,8 +814,10 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 			if (iio_channel_get_attr(chn, i) == attr)
 				break;
 
-		if (i == iio_channel_get_attrs_count(chn))
+		if (i == iio_channel_get_attrs_count(chn)) {
+			printf("SAI: Channel attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
@@ -775,6 +842,7 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_DEVICE:
+		printf("SAI: Attribute type is DEVICE\n");
 		dev = attr->iio.dev;
 		cmd.op = IIOD_OP_WRITE_ATTR;
 
@@ -782,8 +850,10 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 			if (iio_device_get_attr(dev, i) == attr)
 				break;
 
-		if (i == iio_device_get_attrs_count(dev))
+		if (i == iio_device_get_attrs_count(dev)) {
+			printf("SAI: Device attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
@@ -801,6 +871,7 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_DEBUG:
+		printf("SAI: Attribute type is DEBUG\n");
 		dev = attr->iio.dev;
 		cmd.op = IIOD_OP_WRITE_DBG_ATTR;
 
@@ -808,12 +879,15 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 			if (iio_device_get_debug_attr(dev, i) == attr)
 				break;
 
-		if (i == iio_device_get_debug_attrs_count(dev))
+		if (i == iio_device_get_debug_attrs_count(dev)) {
+			printf("SAI: Debug attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		break;
 	case IIO_ATTR_TYPE_BUFFER:
+		printf("SAI: Attribute type is BUFFER\n");
 		buf = attr->iio.buf;
 		dev = iio_buffer_get_device(buf);
 		cmd.op = IIOD_OP_WRITE_BUF_ATTR;
@@ -822,13 +896,16 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 			if (iio_buffer_get_attr(buf, i) == attr)
 				break;
 
-		if (i == iio_buffer_get_attrs_count(buf))
+		if (i == iio_buffer_get_attrs_count(buf)) {
+			printf("SAI: Buffer attribute not found\n");
 			return -ENOENT;
+		}
 
 		arg1 = (uint16_t)i;
 		arg2 = (uint16_t)buf->idx;
 		break;
 	default:
+		printf("SAI: Invalid attribute type\n");
 		return -EINVAL;
 	}
 
@@ -839,38 +916,49 @@ static ssize_t iiod_client_write_attr_new(struct iiod_client *client, const stru
 	iiod_buf[0].size = sizeof(length);
 	iiod_buf[1].ptr = (void *)src;
 	iiod_buf[1].size = len;
+	printf("SAI: Executing command with dev: %u, code: %u, length: %llu\n", cmd.dev,
+			cmd.code, (unsigned long long)length);
 
 	iiod_io_get_response_async(io, NULL, 0);
 
 	ret = iiod_io_send_command(io, &cmd, iiod_buf, IIO_ARRAY_SIZE(iiod_buf));
 	if (ret < 0) {
+		printf("SAI: Command execution failed with ret: %d\n", ret);
 		iiod_io_cancel(io);
 		return ret;
 	}
 
-	return (ssize_t)iiod_io_wait_for_response(io);
+	ret = (ssize_t)iiod_io_wait_for_response(io);
+	printf("SAI: Command response received with ret: %zd\n", (ssize_t)ret);
+	return ret;
 }
 
 ssize_t iiod_client_attr_write(struct iiod_client *client, const struct iio_attr *attr,
 		const char *src, size_t len)
 {
+	printf("SAI: Entering iiod_client_attr_write\n");
 	const struct iio_device *dev;
 	const char *id;
 	char buf[1024];
 	ssize_t ret;
 	int resp;
 
-	if (iiod_client_uses_binary_interface(client))
+	if (iiod_client_uses_binary_interface(client)) {
+		printf("SAI: Using binary interface\n");
 		return iiod_client_write_attr_new(client, attr, src, len);
+	}
 
 	switch (attr->type) {
 	case IIO_ATTR_TYPE_CHANNEL:
+		printf("SAI: Attribute type is CHANNEL\n");
 		dev = iio_channel_get_device(attr->iio.chn);
 		break;
 	case IIO_ATTR_TYPE_BUFFER:
+		printf("SAI: Attribute type is BUFFER\n");
 		dev = iio_buffer_get_device(attr->iio.buf);
 		break;
 	default:
+		printf("SAI: Attribute type is DEVICE or other\n");
 		dev = attr->iio.dev;
 		break;
 	}
@@ -900,31 +988,43 @@ ssize_t iiod_client_attr_write(struct iiod_client *client, const struct iio_attr
 				(unsigned long)len);
 		break;
 	case IIO_ATTR_TYPE_CONTEXT:
+		printf("SAI: Invalid attribute type CONTEXT\n");
 		return -EINVAL;
 	}
 
+	printf("SAI: Command buffer: %s\n", buf);
 	iio_mutex_lock(client->lock);
+	printf("SAI: Mutex locked\n");
 	ret = iiod_client_write_all(client, buf, strlen(buf));
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Command execution failed with ret: %zd\n", ret);
 		goto out_unlock;
+	}
 
 	ret = iiod_client_write_all(client, src, len);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Data write failed with ret: %zd\n", ret);
 		goto out_unlock;
+	}
 
 	ret = iiod_client_read_integer(client, &resp);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Response read failed with ret: %zd\n", ret);
 		goto out_unlock;
+	}
 
 	ret = (ssize_t)resp;
+	printf("SAI: Write operation completed successfully with response: %d\n", resp);
 
 out_unlock:
 	iio_mutex_unlock(client->lock);
+	printf("SAI: Mutex unlocked\n");
 	return ret;
 }
 
 static int iiod_client_cmd(const struct iiod_command *cmd, struct iiod_command_data *data, void *d)
 {
+	printf("SAI: iiod_client_cmd called. Unsupported operation.\n");
 	/* We don't support receiving commands. */
 
 	return -EINVAL;
@@ -932,35 +1032,45 @@ static int iiod_client_cmd(const struct iiod_command *cmd, struct iiod_command_d
 
 static ssize_t iiod_client_read_cb(void *d, const struct iiod_buf *buf, size_t nb)
 {
+	printf("SAI: Entering iiod_client_read_cb\n");
 	struct iiod_client *client = d;
 	ssize_t ret, count = 0;
 	unsigned int i;
 
 	for (i = 0; i < nb; i++) {
+		printf("SAI: Reading buffer %u of size %zu\n", i, buf[i].size);
 		ret = iiod_client_read_all(client, buf[i].ptr, buf[i].size);
-		if (ret <= 0)
+		if (ret <= 0) {
+			printf("SAI: Read failed with ret: %zd\n", ret);
 			return ret;
+		}
 
 		count += ret;
 	}
 
+	printf("SAI: Read callback completed successfully. Total bytes read: %zd\n", count);
 	return count;
 }
 
 static ssize_t iiod_client_write_cb(void *d, const struct iiod_buf *buf, size_t nb)
 {
+	printf("SAI: Entering iiod_client_write_cb\n");
 	struct iiod_client *client = d;
 	ssize_t ret, count = 0;
 	unsigned int i;
 
 	for (i = 0; i < nb; i++) {
+		printf("SAI: Writing buffer %u of size %zu\n", i, buf[i].size);
 		ret = iiod_client_write_all(client, buf[i].ptr, buf[i].size);
-		if (ret <= 0)
+		if (ret <= 0) {
+			printf("SAI: Write failed with ret: %zd\n", ret);
 			return ret;
+		}
 
 		count += ret;
 	}
 
+	printf("SAI: Write callback completed successfully. Total bytes written: %zd\n", count);
 	return count;
 }
 
@@ -991,14 +1101,18 @@ static int iiod_client_enable_binary(struct iiod_client *client)
 	ret = iiod_client_exec_command(client, "BINARY\r\n");
 
 	/* If the BINARY command fail, don't create the responder */
-	if (ret != 0)
+	if (ret != 0) {
+		printf("\n\r SAI: binary is not enabled!\n\r");
 		return 0;
+	}
 
 	client->responder = iiod_responder_create(&iiod_client_ops, client);
 	if (!client->responder) {
 		prm_err(client->params, "Unable to create responder\n");
 		return -ENOMEM;
 	}
+
+	printf("\n\r SAI: binary is enabled!\n\r");
 
 	return 0;
 }
@@ -1017,6 +1131,7 @@ static struct iio_context *iiod_client_create_context_private_new(struct iiod_cl
 		const struct iio_backend *backend, const char *description, const char **ctx_attrs,
 		const char **ctx_values, unsigned int nb_ctx_attrs)
 {
+	printf("SAI: Entering iiod_client_create_context_private_new\n");
 	size_t xml_len = 0x10000, uri_len = sizeof("xml:") - 1;
 	struct iio_context *ctx = NULL;
 	unsigned long long len;
@@ -1025,43 +1140,50 @@ static struct iio_context *iiod_client_create_context_private_new(struct iiod_cl
 	int ret;
 
 	xml = malloc(xml_len + uri_len + 1);
-	if (!xml)
+	if (!xml) {
+		printf("SAI: Failed to allocate memory for XML buffer\n");
 		return iio_ptr(-ENOMEM);
+	}
 
 	memcpy(xml, "xml:", uri_len);
 
 	ret = iiod_client_send_print(client, &xml[uri_len], xml_len);
 	if (ret < 0) {
+		printf("SAI: Unable to send PRINT command, ret: %d\n", ret);
 		prm_perror(client->params, -ret, "Unable to send PRINT command");
 		goto out_free_xml;
 	}
 
 	xml_len = ret;
+	printf("SAI: Received XML length: %zu\n", xml_len);
 
 	/* Null-terminate the XML data */
 	xml[uri_len + xml_len] = '\0';
 
 	is_zstd = strncmp(xml, "xml:<?xml", sizeof("xml:<?xml") - 1) != 0;
 	if (is_zstd)
-		prm_dbg(client->params, "Received ZSTD-compressed XML string.\n");
+		printf("SAI: Received ZSTD-compressed XML string\n");
 	else
-		prm_dbg(client->params, "Received uncompressed XML string.\n");
+		printf("SAI: Received uncompressed XML string\n");
 
 	if (is_zstd) {
 		len = ZSTD_getFrameContentSize(&xml[uri_len], xml_len);
 		if (len == ZSTD_CONTENTSIZE_UNKNOWN || len == ZSTD_CONTENTSIZE_ERROR) {
+			printf("SAI: Invalid ZSTD frame content size\n");
 			ret = -EIO;
 			goto out_free_xml;
 		}
 
 		xml_zstd = malloc(uri_len + len + 1);
 		if (!xml_zstd) {
+			printf("SAI: Failed to allocate memory for decompressed XML\n");
 			ret = -ENOMEM;
 			goto out_free_xml;
 		}
 
 		xml_len = ZSTD_decompress(&xml_zstd[uri_len], len, &xml[uri_len], xml_len);
 		if (ZSTD_isError(xml_len)) {
+			printf("SAI: Unable to decompress ZSTD data: %s\n", ZSTD_getErrorName(xml_len));
 			prm_err(client->params, "Unable to decompress ZSTD data: %s\n",
 					ZSTD_getErrorName(xml_len));
 			ret = -EIO;
@@ -1077,22 +1199,21 @@ static struct iio_context *iiod_client_create_context_private_new(struct iiod_cl
 		xml = xml_zstd;
 	}
 
-	prm_dbg(client->params, "Creating context\n");
+	printf("SAI: Creating context from XML\n");
 
 	ctx = iio_create_context_from_xml(client->params, xml, backend, description, ctx_attrs,
 			ctx_values, nb_ctx_attrs);
 	ret = iio_err(ctx);
 	if (ret) {
+		printf("SAI: Context creation failed, ret: %d\n", ret);
 		ctx = NULL;
 	} else {
 		/* If the context creation succeeded, update our "params"
 		 * pointer to point to the context's params, as we know their
 		 * lifetime is bigger than ours. */
 		client->params = &ctx->params;
+		printf("SAI: Context created successfully\n");
 	}
-
-	if (ctx)
-		prm_dbg(client->params, "Context created.\n");
 
 out_free_xml:
 	free(xml);
@@ -1104,6 +1225,7 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 		const struct iio_backend *backend, const char *description, const char **ctx_attrs,
 		const char **ctx_values, unsigned int nb_ctx_attrs, bool zstd)
 {
+	printf("SAI: Entering iiod_client_create_context_private\n");
 	const char *cmd = zstd ? "ZPRINT\r\n" : "PRINT\r\n";
 	struct iio_context *ctx = NULL;
 	unsigned int extra_char = !iiod_client_uses_binary_interface(client);
@@ -1112,21 +1234,24 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 	int ret;
 
 	iio_mutex_lock(client->lock);
+	printf("SAI: Mutex locked\n");
 	ret = iiod_client_exec_command(client, cmd);
 	if (ret == -EINVAL && zstd) {
-		/* If the ZPRINT command does not exist, try again
-		 * with the regular PRINT command. */
+		printf("SAI: ZPRINT command not supported, falling back to PRINT\n");
 		iio_mutex_unlock(client->lock);
 
 		return iiod_client_create_context_private(client, backend, description, ctx_attrs,
 				ctx_values, nb_ctx_attrs, false);
 	}
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Command execution failed, ret: %d\n", ret);
 		goto out_unlock;
+	}
 
 	xml_len = (size_t)ret;
 	xml = malloc(xml_len + uri_len + 1);
 	if (!xml) {
+		printf("SAI: Failed to allocate memory for XML buffer\n");
 		ret = -ENOMEM;
 		goto out_unlock;
 	}
@@ -1134,21 +1259,25 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 	memcpy(xml, "xml:", uri_len);
 
 	ret = (int)iiod_client_read_all(client, xml + uri_len, xml_len + extra_char);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("SAI: Failed to read XML data, ret: %d\n", ret);
 		goto out_free_xml;
+	}
 
 	/* Replace the \n with a \0 */
 	xml[xml_len + uri_len] = '\0';
+	printf("SAI: Received XML data\n");
 
 #if WITH_ZSTD
 	if (zstd) {
 		unsigned long long len;
 		char *xml_zstd;
 
-		prm_dbg(client->params, "Received ZSTD-compressed XML string.\n");
+		printf("SAI: Decompressing ZSTD-compressed XML string\n");
 
 		len = ZSTD_getFrameContentSize(xml + uri_len, xml_len);
 		if (len == ZSTD_CONTENTSIZE_UNKNOWN || len == ZSTD_CONTENTSIZE_ERROR) {
+			printf("SAI: Invalid ZSTD frame content size\n");
 			ret = -EIO;
 			goto out_free_xml;
 		}
@@ -1156,6 +1285,7 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 		/* +1: Leave space for the terminating \0 */
 		xml_zstd = malloc(len + uri_len + 1);
 		if (!xml_zstd) {
+			printf("SAI: Failed to allocate memory for decompressed XML\n");
 			ret = -ENOMEM;
 			goto out_free_xml;
 		}
@@ -1164,6 +1294,7 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 
 		xml_len = ZSTD_decompress(xml_zstd + uri_len, len, xml + uri_len, xml_len);
 		if (ZSTD_isError(xml_len)) {
+			printf("SAI: Unable to decompress ZSTD data: %s\n", ZSTD_getErrorName(xml_len));
 			prm_err(client->params, "Unable to decompress ZSTD data: %s\n",
 					ZSTD_getErrorName(xml_len));
 			ret = -EIO;
@@ -1179,22 +1310,26 @@ static struct iio_context *iiod_client_create_context_private(struct iiod_client
 	}
 #endif
 
+	printf("SAI: Creating context from XML\n");
 	ctx = iio_create_context_from_xml(client->params, xml, backend, description, ctx_attrs,
 			ctx_values, nb_ctx_attrs);
 	ret = iio_err(ctx);
 	if (ret) {
+		printf("SAI: Context creation failed, ret: %d\n", ret);
 		ctx = NULL;
 	} else {
 		/* If the context creation succeeded, update our "params"
 		 * pointer to point to the context's params, as we know their
 		 * lifetime is bigger than ours. */
 		client->params = &ctx->params;
+		printf("SAI: Context created successfully\n");
 	}
 
 out_free_xml:
 	free(xml);
 out_unlock:
 	iio_mutex_unlock(client->lock);
+	printf("SAI: Mutex unlocked\n");
 	return ctx ? ctx : iio_ptr(ret);
 }
 
@@ -1202,13 +1337,20 @@ struct iio_context *iiod_client_create_context(struct iiod_client *client,
 		const struct iio_backend *backend, const char *description, const char **ctx_attrs,
 		const char **ctx_values, unsigned int nb_ctx_attrs)
 {
-	if (!WITH_ZSTD || !iiod_client_uses_binary_interface(client))
+	printf("SAI: Entering iiod_client_create_context\n");
+	if (!iiod_client_uses_binary_interface(client)) {
+		printf("SAI: ZSTD not enabled or binary interface not used\n");
 		return iiod_client_create_context_private(client, backend, description, ctx_attrs,
 				ctx_values, nb_ctx_attrs, WITH_ZSTD);
+	}
 
 #if WITH_ZSTD
+	printf("SAI: ZSTD is enabled\n");
 	return iiod_client_create_context_private_new(
 			client, backend, description, ctx_attrs, ctx_values, nb_ctx_attrs);
+#else
+	return iiod_client_create_context_private(client, backend, description, ctx_attrs,
+			ctx_values, nb_ctx_attrs, false);
 #endif
 }
 
@@ -1594,7 +1736,7 @@ struct iio_block_pdata *iiod_client_create_block(
 
 	block->idx = pdata->next_block_idx++;
 
-	block->io = iiod_responder_create_io(client->responder, block->idx + 1);
+	block->io = iiod_responder_create_io(client->responder, block->idx + 1); /* SAIdo: new client id is given here wrt block idx */
 	ret = iio_err(block->io);
 	if (ret)
 		goto err_free_data;
@@ -1760,7 +1902,7 @@ int iiod_client_dequeue_block(struct iio_block_pdata *block, bool nonblock)
 		 * error, but make sure that we can retry the dequeue. */
 		block->retry_dequeue = true;
 	} else {
-		block->enqueued = false;
+		block->enqueued = false; /* set it ready for next enqueue */
 	}
 
 out_unlock:
